@@ -1,0 +1,180 @@
+Got it. You want a **C program** that:
+
+* Runs a **for loop with 5000 iterations** doing some computation.
+* Offloads that computation to the **GPU using OpenCL**.
+* Compares CPU vs GPU execution time to show the performance gain.
+
+---
+
+### ✅ Here's a working OpenCL-based C program to do that:
+
+This program:
+
+* Fills an input array with values,
+* Squares each value (or any other operation you can replace),
+* Runs it both on the **CPU** (standard for loop) and **GPU** (using OpenCL),
+* Compares execution time.
+
+---
+
+### 🔧 Prerequisites
+
+Make sure OpenCL is installed:
+
+```bash
+sudo apt install ocl-icd-opencl-dev clinfo
+```
+
+---
+
+### 📄 `gpu_loop_opencl.c`
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
+#include <time.h>
+
+#define SIZE 5000
+#define CHECK(status, msg) if (status != CL_SUCCESS) { fprintf(stderr, "%s failed: %d\n", msg, status); exit(1); }
+
+const char *kernelSource = 
+"__kernel void square_array(__global int *input, __global int *output) {\n"
+"    int id = get_global_id(0);\n"
+"    output[id] = input[id] * input[id];\n"
+"}\n";
+
+void cpu_compute(int *input, int *output) {
+    for (int i = 0; i < SIZE; i++) {
+        output[i] = input[i] * input[i];
+    }
+}
+
+double time_diff(struct timespec start, struct timespec end) {
+    return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+}
+
+int main() {
+    int *input = (int*) malloc(sizeof(int) * SIZE);
+    int *output_cpu = (int*) malloc(sizeof(int) * SIZE);
+    int *output_gpu = (int*) malloc(sizeof(int) * SIZE);
+    
+    for (int i = 0; i < SIZE; i++) input[i] = i;
+
+    // ---------- CPU ----------
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    cpu_compute(input, output_cpu);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("CPU Time: %f sec\n", time_diff(start, end));
+
+    // ---------- GPU via OpenCL ----------
+    cl_int status;
+
+    // Platform & Device
+    cl_platform_id platform;
+    cl_device_id device;
+    status = clGetPlatformIDs(1, &platform, NULL); CHECK(status, "clGetPlatformIDs");
+    status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL); CHECK(status, "clGetDeviceIDs");
+
+    // Context & Command Queue
+    cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, &status); CHECK(status, "clCreateContext");
+    cl_command_queue queue = clCreateCommandQueue(context, device, 0, &status); CHECK(status, "clCreateCommandQueue");
+
+    // Buffers
+    cl_mem input_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, SIZE * sizeof(int), input, &status); CHECK(status, "clCreateBuffer input");
+    cl_mem output_buf = clCreateBuffer(context, CL_MEM_WRITE_ONLY, SIZE * sizeof(int), NULL, &status); CHECK(status, "clCreateBuffer output");
+
+    // Program & Kernel
+    cl_program program = clCreateProgramWithSource(context, 1, &kernelSource, NULL, &status); CHECK(status, "clCreateProgramWithSource");
+    status = clBuildProgram(program, 1, &device, NULL, NULL, NULL); 
+    if (status != CL_SUCCESS) {
+        size_t log_size;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+        char *log = malloc(log_size);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+        fprintf(stderr, "Build log:\n%s\n", log);
+        free(log);
+        exit(1);
+    }
+
+    cl_kernel kernel = clCreateKernel(program, "square_array", &status); CHECK(status, "clCreateKernel");
+
+    // Set kernel args
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &input_buf);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &output_buf);
+
+    // Execute kernel
+    size_t global_size = SIZE;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    status = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL); CHECK(status, "clEnqueueNDRangeKernel");
+
+    // Read result
+    status = clEnqueueReadBuffer(queue, output_buf, CL_TRUE, 0, SIZE * sizeof(int), output_gpu, 0, NULL, NULL); CHECK(status, "clEnqueueReadBuffer");
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    printf("GPU Time: %f sec\n", time_diff(start, end));
+
+    // Compare results
+    int errors = 0;
+    for (int i = 0; i < SIZE; i++) {
+        if (output_cpu[i] != output_gpu[i]) {
+            errors++;
+        }
+    }
+
+    if (errors == 0) {
+        printf("CPU and GPU results match!\n");
+    } else {
+        printf("Mismatch in %d results!\n", errors);
+    }
+
+    // Cleanup
+    clReleaseMemObject(input_buf);
+    clReleaseMemObject(output_buf);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+    free(input);
+    free(output_cpu);
+    free(output_gpu);
+
+    return 0;
+}
+```
+
+---
+
+### 🔧 Compile the Code:
+
+```bash
+gcc gpu_loop_opencl.c -o gpu_loop_opencl -lOpenCL -lrt
+```
+
+---
+
+### ✅ Run It:
+
+```bash
+./gpu_loop_opencl
+```
+
+---
+
+### 📌 Output (example):
+
+```text
+CPU Time: 0.000014 sec
+GPU Time: 0.002104 sec
+CPU and GPU results match!
+```
+
+---
+
+### 📎 Notes:
+
+* You can modify the kernel to do other tasks inside the loop.
+* If your GPU is weak or data is small (like 5000 integers), the CPU may still be faster — try larger sizes to see benefits.
+* You can compare with different workloads (e.g., floating-point math, FFT, convolution).
+
+Want me to change the operation inside the loop to something heavier for more realistic comparison?
